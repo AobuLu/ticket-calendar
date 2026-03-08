@@ -5,6 +5,9 @@ on:
     - cron: "*/30 * * * *"
   workflow_dispatch:
 
+permissions:
+  contents: write
+
 jobs:
   build:
     runs-on: ubuntu-latest
@@ -26,8 +29,8 @@ jobs:
 
       - name: Commit updated ICS
         run: |
-          git config user.name "github-actions[bot]"
-          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git config user.name "github-actions"
+          git config user.email "action@github.com"
           git add docs/ticket_calendar.ics
-          git commit -m "auto update ticket calendar" || echo "No changes to commit"
+          git commit -m "update calendar" || echo "no change"
           git push
