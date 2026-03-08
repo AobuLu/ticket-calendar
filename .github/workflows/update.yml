@@ -1,4 +1,4 @@
-name: update calendar
+name: update ticket calendar
 
 on:
   schedule:
@@ -10,23 +10,24 @@ jobs:
     runs-on: ubuntu-latest
 
     steps:
-      - uses: actions/checkout@v3
+      - name: Checkout
+        uses: actions/checkout@v4
 
-      - name: setup python
-        uses: actions/setup-python@v4
+      - name: Setup Python
+        uses: actions/setup-python@v5
         with:
-          python-version: "3.10"
+          python-version: "3.11"
 
-      - name: install deps
+      - name: Install dependencies
         run: pip install -r requirements.txt
 
-      - name: generate calendar
+      - name: Generate ICS
         run: python generate_ics.py
 
-      - name: commit
+      - name: Commit updated ICS
         run: |
-          git config --global user.name "github-actions"
-          git config --global user.email "action@github.com"
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
           git add docs/ticket_calendar.ics
-          git commit -m "update calendar" || echo "no change"
+          git commit -m "auto update ticket calendar" || echo "No changes to commit"
           git push
