@@ -6,6 +6,7 @@ from pathlib import Path
 
 import requests
 from icalendar import Calendar, Event, Alarm
+from pytz import timezone
 
 SHEET_URL = "https://docs.google.com/spreadsheets/d/e/2PACX-1vRM6THpS8w6h0b91xbauEz-sp1dl3uhReR5AJpocWh_CuYQcKVm6DNedGCaXJxJTAda5IEXYdfzAhyd/pub?output=csv"
 
@@ -34,10 +35,34 @@ ACCOUNT_SHOWS = {
 }
 
 MIN_ALLOWED = datetime(2026, 3, 1, 0, 0)
+TZ = timezone("Asia/Shanghai")
 
-YMDHM = re.compile(r'(?P<year>20\d{2})年\s*(?P<month>\d{1,2})月\s*(?P<day>\d{1,2})日\s*(?:\([^)]+\))?\s*(?P<hour>\d{1,2})[:：](?P<minute>\d{2})')
-MDHM = re.compile(r'(?P<month>\d{1,2})月\s*(?P<day>\d{1,2})日\s*(?:\([^)]+\))?\s*(?P<hour>\d{1,2})[:：](?P<minute>\d{2})')
-EXCHANGE = re.compile(r'(?:兑换时间|资格兑换时间)\s*[:：]?\s*(?:(?P<year>20\d{2})年\s*)?(?P<month>\d{1,2})月\s*(?P<day>\d{1,2})日\s*(?P<hour>\d{1,2})[:：](?P<minute>\d{2})')
+# 同行日期+时间
+YMDHM = re.compile(
+    r'(?P<year>20\d{2})年\s*(?P<month>\d{1,2})月\s*(?P<day>\d{1,2})[日号]\s*'
+    r'(?:[（(][^)）]+[)）])?\s*(?P<hour>\d{1,2})[:：](?P<minute>\d{2})'
+)
+MDHM = re.compile(
+    r'(?P<month>\d{1,2})月\s*(?P<day>\d{1,2})[日号]\s*'
+    r'(?:[（(][^)）]+[)）])?\s*(?P<hour>\d{1,2})[:：](?P<minute>\d{2})'
+)
+
+# 单独日期 / 单独时间
+DATE_ONLY = re.compile(
+    r'^(?:(?P<year>20\d{2})年\s*)?(?P<month>\d{1,2})月\s*(?P<day>\d{1,2})[日号]\s*(?:[（(][^)）]+[)）])?$'
+)
+TIME_ONLY = re.compile(
+    r'^(?P<hour>\d{1,2})[:：](?P<minute>\d{2})\s*(?P<label>.+)$'
+)
+
+# 兑换时间
+EXCHANGE = re.compile(
+    r'(?:兑换时间|资格兑换时间)\s*[:：]?\s*'
+    r'(?:(?P<year>20\d{2})年\s*)?'
+    r'(?P<month>\d{1,2})月\s*(?P<day>\d{1,2})[日号]?\s*'
+    r'(?P<hour>\d{1,2})[:：](?P<minute>\d{2})'
+)
+
 
 def load_rows():
     r = requests.get(SHEET_URL, timeout=30)
@@ -45,12 +70,14 @@ def load_rows():
     text = r.content.decode("utf-8-sig")
     return list(csv.DictReader(io.StringIO(text)))
 
+
 def get_any(row, *names):
     for name in names:
         val = row.get(name)
         if val is not None and str(val).strip():
             return str(val).strip()
     return ""
+
 
 def infer_show(text, account_name):
     hits = [s for s in SHOWS if s in text]
@@ -64,17 +91,43 @@ def infer_show(text, account_name):
 
     return None
 
+
 def dt(y, m, d, h, mi):
     return datetime(int(y), int(m), int(d), int(h), int(mi))
+
 
 def clean_label(label):
     label = re.sub(r'^[\s\-—–·•]+', '', label.strip())
     label = re.sub(r'^[📍📌⏰🌟✨🎈🐕🔔]+\s*', '', label)
     return label.strip("()（） ")
 
+
+def is_valid_label(label):
+    label = label.strip()
+
+    # 太短
+    if len(label) <= 1:
+        return False
+
+    # 纯时间
+    if re.fullmatch(r'\d{1,2}[:：]\d{2}', label):
+        return False
+
+    # 像“3月6日23:59”“4月11日23:59”
+    if re.fullmatch(r'\d{1,2}月\d{1,2}日\d{1,2}[:：]\d{2}', label):
+        return False
+
+    # 明显噪音
+    if label in {"起", "开票时间", "开票", "更多", "详情"}:
+        return False
+
+    return True
+
+
 def build_uid(show_name, sale_type_raw, sale_time):
     safe = re.sub(r'\s+', '', sale_type_raw)
     return f"{show_name}_{sale_time.strftime('%Y%m%dT%H%M')}_{safe}"
+
 
 def extract_events(text, published_at, show_name):
     year_hint = 2026
@@ -83,28 +136,74 @@ def extract_events(text, published_at, show_name):
         year_hint = int(m.group(1))
 
     out = []
+    pending_date = None
 
+    # 先抓兑换时间
     for m in EXCHANGE.finditer(text):
         y = m.group("year") or year_hint
-        when = dt(y, m.group("month"), m.group("day"), m.group("hour"), m.group("minute"))
+        when = dt(
+            y,
+            m.group("month"),
+            m.group("day"),
+            m.group("hour"),
+            m.group("minute"),
+        )
         out.append((when, "优先购兑换"))
 
-    for line in [x.strip() for x in text.splitlines() if x.strip()]:
+    lines = [x.strip() for x in text.splitlines() if x.strip()]
+
+    for line in lines:
+        # 1. 同一行：完整年月日时分
         m = YMDHM.search(line)
         if m:
-            when = dt(m.group("year"), m.group("month"), m.group("day"), m.group("hour"), m.group("minute"))
+            when = dt(
+                m.group("year"),
+                m.group("month"),
+                m.group("day"),
+                m.group("hour"),
+                m.group("minute"),
+            )
             label = clean_label(line[m.end():])
-            if label:
+            if label and is_valid_label(label):
                 out.append((when, label))
+            pending_date = None
             continue
 
+        # 2. 同一行：月日时分
         m = MDHM.search(line)
         if m:
-            when = dt(year_hint, m.group("month"), m.group("day"), m.group("hour"), m.group("minute"))
+            when = dt(
+                year_hint,
+                m.group("month"),
+                m.group("day"),
+                m.group("hour"),
+                m.group("minute"),
+            )
             label = clean_label(line[m.end():])
-            if label:
+            if label and is_valid_label(label):
                 out.append((when, label))
+            pending_date = None
+            continue
 
+        # 3. 单独日期行
+        m = DATE_ONLY.search(line)
+        if m:
+            y = m.group("year") or year_hint
+            pending_date = (int(y), int(m.group("month")), int(m.group("day")))
+            continue
+
+        # 4. 单独时间行，接上一行日期
+        m = TIME_ONLY.search(line)
+        if m and pending_date:
+            y, month, day = pending_date
+            when = dt(y, month, day, m.group("hour"), m.group("minute"))
+            label = clean_label(m.group("label"))
+            if label and is_valid_label(label):
+                out.append((when, label))
+            pending_date = None
+            continue
+
+    # 去重 + 时间过滤
     seen = set()
     keep = []
     for when, label in out:
@@ -114,7 +213,9 @@ def extract_events(text, published_at, show_name):
         if key not in seen:
             seen.add(key)
             keep.append((when, label))
+
     return keep
+
 
 def main():
     rows = load_rows()
@@ -146,11 +247,14 @@ def main():
                 continue
             seen_uid.add(uid)
 
+            start = TZ.localize(when)
+            end = TZ.localize(when + timedelta(minutes=5))
+
             event = Event()
             event.add("uid", uid)
             event.add("summary", f"{show_name}｜{sale_type_raw}")
-            event.add("dtstart", when)
-            event.add("dtend", when)
+            event.add("dtstart", start)
+            event.add("dtend", end)
             event.add("description", f"来源账号：{account_name}\n微博：{weibo_url}")
 
             alarm = Alarm()
@@ -164,6 +268,7 @@ def main():
     Path("docs").mkdir(exist_ok=True)
     with open("docs/ticket_calendar.ics", "wb") as f:
         f.write(cal.to_ical())
+
 
 if __name__ == "__main__":
     main()
