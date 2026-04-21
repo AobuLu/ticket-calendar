@@ -22,6 +22,7 @@ SHOWS = [
     "辛吉路的画材店",
     "秘密花园",
     "新贵",
+    "星期三",
 ]
 
 ACCOUNT_SHOWS = {
@@ -32,6 +33,7 @@ ACCOUNT_SHOWS = {
     "辛吉路的画材店成都站": ["辛吉路的画材店"],
     "Mioji米欧吉": ["秘密花园"],
     "小鹿追马DeerDrama": ["新贵"],
+    "一台好戏Focustage": ["星期三"],
 }
 
 MIN_ALLOWED = datetime(2026, 3, 1, 0, 0)
